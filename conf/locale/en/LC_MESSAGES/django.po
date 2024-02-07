@@ -5829,7 +5829,7 @@ msgstr ""
 
 #: lms/urls.py
 msgid "LMS Administration"
-msgstr ""
+msgstr "LMS Administration [Mainbot]"
 
 #: openedx/core/djangoapps/ace_common/apps.py
 msgid "ACE Common"

@@ -6868,7 +6868,7 @@ msgstr "Restaurer cette révision marquera cet article comme supprimé."
 
 #: lms/urls.py
 msgid "LMS Administration"
-msgstr "Administration LMS"
+msgstr "Administration LMS [Mainbot]"
 
 #: openedx/core/djangoapps/ace_common/apps.py
 msgid "ACE Common"
