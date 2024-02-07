@@ -536,7 +536,7 @@ class RegistrationView(APIView):
                             content_type="application/json")
 
     @method_decorator(csrf_exempt)
-    @method_decorator(ratelimit(key=REAL_IP_KEY, rate=settings.REGISTRATION_RATELIMIT, method='POST', block=False))
+    # @method_decorator(ratelimit(key=REAL_IP_KEY, rate=settings.REGISTRATION_RATELIMIT, method='POST', block=False))
     def post(self, request):
         """Create the user's account.
 
@@ -555,9 +555,9 @@ class RegistrationView(APIView):
                 address already exists
             HttpResponse: 403 operation not allowed
         """
-        should_be_rate_limited = getattr(request, 'limited', False)
-        if should_be_rate_limited:
-            return JsonResponse({'error_code': 'forbidden-request'}, status=403)
+        # should_be_rate_limited = getattr(request, 'limited', False)
+        # if should_be_rate_limited:
+        #     return JsonResponse({'error_code': 'forbidden-request'}, status=403)
 
         if is_require_third_party_auth_enabled() and not pipeline.running(request):
             # if request is not running a third-party auth pipeline
@@ -566,6 +566,8 @@ class RegistrationView(APIView):
             )
 
         data = request.POST.copy()
+        print('\n\n\nregister data', data, '\n\n\n')
+
         self._handle_terms_of_service(data)
 
         try:
@@ -577,23 +579,63 @@ class RegistrationView(APIView):
             return self._create_response(request, errors, status_code=exc.status_code)
 
         response = self._handle_duplicate_email_username(request, data)
-        if response:
+        if response and 'is_google_one_tap' not in data:
             return response
 
         response = self._handle_country_code_validation(request, data)
         if response:
             return response
 
-        response, user = self._create_account(request, data)
-        if response:
-            return response
+        from openedx.core.djangoapps.user_authn.views.login import _get_user_by_email_or_username
+        from openedx.core.djangoapps.user_authn.views.utils import API_V1
+        from openedx.core.djangoapps.user_authn.views.login import _authenticate_first_party
+        from openedx.core.djangoapps.user_authn.views.login import _handle_successful_authentication_and_login
+        from social_core.pipeline.social_auth import associate_user, social_user
+        from social_core.backends.google import GoogleOAuth2
+
+        # getting social user obj
+        social_user_obj = None
+        uid = ''
+        if 'is_google_one_tap' in data:
+            request.social_strategy = social_utils.load_strategy(request)
+            print('\n\n\n create user social auth  request.social_strategy = ', request.social_strategy, '\n\n\n')
+
+            request.backend = social_utils.load_backend(request.social_strategy, GoogleOAuth2.name, redirect_uri=None)
+            print('\n\n\n create user social auth  request.backend = ', request.backend, '\n\n\n')
+            uid = request.POST.copy()['email']
+            social_user_obj = social_user(backend=request.backend, uid=uid)
+
+
+        # getting user obj
+        user = social_user_obj['user']
+        new_user = False
+        if 'is_google_one_tap' in data and user:
+            print('\n\n\n  register  user', user, '\n\n\n')
+
+            possibly_authenticated_user = _authenticate_first_party(request, user, False)
+            print('\n\n\n  register  possibly_authenticated_user', possibly_authenticated_user, '\n\n\n')
+
+            _handle_successful_authentication_and_login(possibly_authenticated_user, request)
+        elif not user:
+            print('\n\n\n create account ', '\n\n\n')
+            response, user = self._create_account(request, data)
+            new_user = True
+            if response:
+                return response
+
+        if 'is_google_one_tap' in data:
+            user_social_auth = associate_user(backend=request.backend, uid=uid, user=user, social=social_user_obj['social'])
+            print('\n\n\n create account associate_user ', user_social_auth, '\n\n\n')
+
 
         redirect_to, root_url = get_next_url_for_login_page(request, include_host=True)
         redirect_url = get_redirect_url_with_host(root_url, redirect_to)
         authenticated_user = {'username': user.username, 'user_id': user.id}
+
         response = self._create_response(
-            request, {'authenticated_user': authenticated_user}, status_code=200, redirect_url=redirect_url
+            request, {'authenticated_user': authenticated_user}, status_code=200, redirect_url=redirect_url, new_user=new_user
         )
+
         set_logged_in_cookies(request, response, user)
         if not user.is_active and settings.SHOW_ACCOUNT_ACTIVATION_CTA and not settings.MARKETING_EMAILS_OPT_IN:
             response.set_cookie(
@@ -647,6 +689,7 @@ class RegistrationView(APIView):
             errors['username_suggestions'] = generate_username_suggestions(username)
 
         if errors:
+            print('\n\n\n duplicate email or username', errors, '\n\n\n')
             return self._create_response(request, errors, status_code=409, error_code=error_code)
 
     def _handle_terms_of_service(self, data):
@@ -687,7 +730,7 @@ class RegistrationView(APIView):
 
         return response, user
 
-    def _create_response(self, request, response_dict, status_code, redirect_url=None, error_code=None):
+    def _create_response(self, request, response_dict, status_code, redirect_url=None, error_code=None, new_user=False):
         if status_code == 200:
             # keeping this `success` field in for now, as we have outstanding clients expecting this
             response_dict['success'] = True
@@ -696,6 +739,9 @@ class RegistrationView(APIView):
         if error_code:
             response_dict['error_code'] = error_code
             set_custom_attribute('register_error_code', error_code)
+        if 'is_google_one_tap' in request.POST.copy() and not new_user:
+            response_dict['is_google_one_tap'] = True
+        print('\n\n\nrequets.data', request.POST.copy(), '\n\n\n')
         return JsonResponse(response_dict, status=status_code)
 
 
